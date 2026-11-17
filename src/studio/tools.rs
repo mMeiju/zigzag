@@ -348,7 +348,7 @@ pub fn tool_specs() -> Value {
         }),
         json!({
             "name": "list_machines",
-            "description": "The machines a document can be set up for (set_document's machine): ZigZag's and the user's own. Each has its hoops (width by height in mm), the hoop a new design starts in, the file format it reads if known, the shortest stitch and locks it asks for if any, its link if ZigZag sends designs straight to it (skitch: send_to_skitch; the rest take an exported file), and whether it has been sewn on from ZigZag. Also the document's machine and the one new documents start with.",
+            "description": "The machines a document can be set up for (set_document's machine): ZigZag's and the user's own. Each has its hoops (width by height in mm), the hoop a new design starts in, the file format it reads if known, the shortest stitch and locks it asks for if any, its link if ZigZag sends designs straight to it (skitch: send_to_skitch; janome: send_to_janome; the rest take an exported file), and whether it has been sewn on from ZigZag. Also the document's machine and the one new documents start with.",
             "inputSchema": { "type": "object", "properties": {} },
             "annotations": { "readOnlyHint": true }
         }),
@@ -551,6 +551,22 @@ pub fn tool_specs() -> Value {
         "inputSchema": { "type": "object", "properties": {} },
         "annotations": { "readOnlyHint": true }
     }));
+    tools.push(json!({
+        "name": "send_to_janome",
+        "description": "Send the design to a Janome machine over Wi-Fi (the IJ521 and other dotCustomizer models), for a document whose machine is a Janome with a Wi-Fi link (list_machines shows the link). The design goes as JEF, the way the dotCustomizer app sends it, and the machine then sews it from its own screen. Without `address`, the one machine that answers on the local network is used; if none or several answer, the error says which. Check the design and get the person's go-ahead first.",
+        "inputSchema": { "type": "object", "properties": {
+            "address": { "type": "string", "description": "The machine's IP address or host name. Default: the one machine found on the local network." }
+        } },
+        "annotations": { "destructiveHint": false, "openWorldHint": true }
+    }));
+    tools.push(json!({
+        "name": "janome_status",
+        "description": "How a Janome machine on the local network is doing: its status (no data, sewing, paused, color change, …), how far through the loaded design it is in stitches, the needle position, and the loaded design's checksum. Without `address`, the one machine that answers on the local network is asked.",
+        "inputSchema": { "type": "object", "properties": {
+            "address": { "type": "string", "description": "The machine's IP address or host name. Default: the one machine found on the local network." }
+        } },
+        "annotations": { "readOnlyHint": true }
+    }));
     Value::Array(tools)
 }
 
@@ -566,6 +582,7 @@ fn only_reads(name: &str) -> bool {
             | "get_svg"
             | "list_documents"
             | "list_machines"
+            | "janome_status"
     )
 }
 
@@ -996,6 +1013,7 @@ impl Studio {
         let reads = matches!(
             name,
             "get_design" | "render_preview" | "check_design" | "export" | "send_to_skitch"
+                | "send_to_janome"
         );
         if reads {
             self.plan_now();
@@ -1274,6 +1292,8 @@ impl Studio {
             }
             "send_to_skitch" => self.tool_send_to_skitch(),
             "machine_status" => Ok(ToolResult::json(&self.machine_json())),
+            "send_to_janome" => self.tool_send_to_janome(args),
+            "janome_status" => self.tool_janome_status(args),
             other => Err(format!("unknown tool '{other}'")),
         };
         if !self.batching && self.dirty_needs_plan() {
@@ -2302,6 +2322,39 @@ impl Studio {
     }
 }
 
+/// The Janome to talk to: the address a tool call named, or the only
+/// machine discovery finds on the local network. Returns the address
+/// and, when discovery found it, the machine it belongs to. An error
+/// says what discovery found instead, so the person can act on it.
+fn janome_host(
+    args: &Value,
+) -> Result<(String, Option<zigzag::machine::janome::Machine>), String> {
+    use zigzag::machine::janome as wire;
+    if let Some(a) = args.get("address").and_then(Value::as_str) {
+        let a = a.trim();
+        if !a.is_empty() {
+            return Ok((a.to_string(), None));
+        }
+    }
+    let found = wire::discover(std::time::Duration::from_secs(2))
+        .map_err(|e| format!("Looking for Janome machines didn't work: {e:#}"))?;
+    match found.len() {
+        1 => {
+            let m = found.into_iter().next().unwrap();
+            Ok((m.ip.clone(), Some(m)))
+        }
+        0 => Err("No Janome machine answered on the local network. Check the machine is on and on the same Wi-Fi, or pass `address` with its IP address.".into()),
+        _ => Err(format!(
+            "More than one Janome machine answered ({}); pass `address` to choose one.",
+            found
+                .iter()
+                .map(|m| format!("{} at {}", m.name, m.ip))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
 impl Studio {
     fn tool_send_to_skitch(&mut self) -> Result<ToolResult, String> {
         // (A document set up for a machine that takes a file isn't sent.)
@@ -2334,6 +2387,67 @@ impl Studio {
         Ok(ToolResult::text(
             "Sending. The Skitch window now walks the person through tracing the outline and sewing; call machine_status to follow along.",
         ))
+    }
+
+    fn tool_send_to_janome(&mut self, args: &Value) -> Result<ToolResult, String> {
+        use zigzag::machine::janome as wire;
+        // (Only a document set up for a Janome on Wi-Fi is sent this way.)
+        if !self.janome_target() {
+            return Err(format!(
+                "This document is set up for {}, not a Janome on Wi-Fi: set its machine to one with a janome link (set_document; list_machines shows them), or export a file for it instead.",
+                self.machine_label()
+                    .or_else(|| self
+                        .machines
+                        .current
+                        .as_deref()
+                        .and_then(|id| self.machines.find(id))
+                        .map(|p| p.name.clone()))
+                    .unwrap_or("a machine".into())
+            ));
+        }
+        if self.design.blocks.is_empty() {
+            return Err("There's nothing to sew yet.".into());
+        }
+        if self.design_over_hoop() {
+            return Err("The design is bigger than the hoop.".into());
+        }
+        // The same JEF the Janome window sends: the design as planned,
+        // with the document's export options.
+        let jef = zigzag::formats::write_format_with(
+            &self.design,
+            "jef",
+            &self.doc.settings.export_options(),
+        )
+        .map_err(|e| format!("The design could not be written as JEF: {e:#}"))?;
+        let (host, found) = janome_host(args)?;
+        let log = wire::send_jef(&host, &jef, std::time::Duration::from_secs(15))
+            .map_err(|e| format!("Sending to the Janome at {host} didn't work: {e:#}"))?;
+        let dest = match &found {
+            Some(m) => format!("{} at {}", m.name, m.ip),
+            None => format!("the Janome at {host}"),
+        };
+        Ok(ToolResult::text(format!(
+            "Sent the design to {dest} as JEF ({} bytes).\n{}\nThe machine has the design now and sews it from its own screen; call janome_status to ask how it's doing.",
+            jef.len(),
+            log.join("\n")
+        )))
+    }
+
+    fn tool_janome_status(&self, args: &Value) -> Result<ToolResult, String> {
+        use zigzag::machine::janome as wire;
+        let (host, found) = janome_host(args)?;
+        let st = wire::status(&host, std::time::Duration::from_secs(3))
+            .map_err(|e| format!("The Janome at {host} didn't answer: {e:#}"))?;
+        Ok(ToolResult::json(&json!({
+            "address": host,
+            "machine": found.map(|m| json!({ "name": m.name, "model": m.model })),
+            "status": st.name(),
+            "status_code": st.code,
+            "stitch_position": st.stitch_position,
+            "needle_x_mm": st.x as f64 / 10.0,
+            "needle_y_mm": st.y as f64 / 10.0,
+            "design_crc": format!("{:#06x}", st.design_crc),
+        })))
     }
 
     /// The machine's state for agents.
@@ -2445,6 +2559,8 @@ mod tests {
             "save",
             "export",
             "undo",
+            "send_to_janome",
+            "janome_status",
         ] {
             assert!(names.contains(&want), "{want} missing");
         }
@@ -2452,6 +2568,118 @@ mod tests {
             assert_eq!(t["inputSchema"]["type"], "object", "{}", t["name"]);
             assert!(t["description"].as_str().unwrap().len() > 10);
         }
+    }
+
+    #[test]
+    fn send_to_janome_refuses_a_document_not_set_up_for_one() {
+        let mut s = Studio::with_file(None, None);
+        ok(s.run_tool(
+            "add_svg",
+            &json!({ "svg": BADGE, "width_mm": 50.0, "replace": true }),
+        ));
+        // No machine at all: a plain error naming the way out, no panic.
+        let r = s.run_tool("send_to_janome", &json!({ "address": "127.0.0.1" }));
+        assert!(
+            r.is_error && text(&r).contains("not a Janome on Wi-Fi"),
+            "{}",
+            text(&r)
+        );
+        // A Janome that takes a file (no Wi-Fi link) is refused too.
+        ok(s.run_tool("set_document", &json!({ "machine": "janome-550e" })));
+        let r = s.run_tool("send_to_janome", &json!({ "address": "127.0.0.1" }));
+        assert!(
+            r.is_error && text(&r).contains("not a Janome on Wi-Fi"),
+            "{}",
+            text(&r)
+        );
+    }
+
+    #[test]
+    fn janome_status_with_nothing_answering_is_a_plain_error() {
+        let mut s = Studio::with_file(None, None);
+        let r = s.run_tool("janome_status", &json!({ "address": "127.0.0.1" }));
+        assert!(r.is_error, "{}", text(&r));
+    }
+
+    /// A fake Janome on the protocol port: answers the status exchange
+    /// on connect, accepts the length notice and the design data, and
+    /// reports how many design bytes arrived. None when the port can't
+    /// be bound here (the wire format itself is covered by the
+    /// library's tests).
+    fn fake_janome() -> Option<(std::sync::mpsc::Receiver<usize>, std::thread::JoinHandle<()>)> {
+        let listener =
+            std::net::TcpListener::bind(("127.0.0.1", zigzag::machine::janome::PORT)).ok()?;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(30)));
+            let packet = |cmd: u16, a: u16, payload: &[u8]| {
+                let mut v = Vec::new();
+                v.extend_from_slice(b"JANOME:\x00");
+                v.extend_from_slice(&cmd.to_le_bytes());
+                v.extend_from_slice(&a.to_le_bytes());
+                v.extend_from_slice(&0u32.to_le_bytes());
+                v.extend_from_slice(&((20 + payload.len()) as u32).to_le_bytes());
+                v.extend_from_slice(payload);
+                v
+            };
+            let mut got = 0usize;
+            loop {
+                let mut head = [0u8; 20];
+                if stream.read_exact(&mut head).is_err() {
+                    break;
+                }
+                let cmd = u16::from_le_bytes([head[8], head[9]]);
+                let len =
+                    u32::from_le_bytes([head[12], head[13], head[14], head[15]]) as usize;
+                match cmd {
+                    // Status: a 48-byte packet, code 0 (no data).
+                    2 => {
+                        let _ = stream.write_all(&packet(2, 1, &[0u8; 28]));
+                    }
+                    // The length notice: accepted.
+                    12 => {
+                        let _ = stream.write_all(&packet(12, 1, &[]));
+                    }
+                    // The design data: read it, then accept it.
+                    13 => {
+                        let mut data = vec![0u8; len];
+                        if stream.read_exact(&mut data).is_err() {
+                            break;
+                        }
+                        got = data.len();
+                        let _ = stream.write_all(&packet(13, 1, &[]));
+                        break;
+                    }
+                    _ => break,
+                }
+            }
+            let _ = tx.send(got);
+        });
+        Some((rx, handle))
+    }
+
+    #[test]
+    fn send_to_janome_uploads_jef_to_a_machine_that_answers() {
+        let Some((rx, server)) = fake_janome() else {
+            return;
+        };
+        let mut s = Studio::with_file(None, None);
+        ok(s.run_tool(
+            "add_svg",
+            &json!({ "svg": BADGE, "width_mm": 50.0, "replace": true }),
+        ));
+        ok(s.run_tool("set_document", &json!({ "machine": "janome-ij521" })));
+        let r = s.run_tool("send_to_janome", &json!({ "address": "127.0.0.1" }));
+        assert!(!r.is_error, "{}", text(&r));
+        assert!(text(&r).contains("Sent the design"), "{}", text(&r));
+        let got = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        assert!(got > 0 && got % 4 == 0, "padded JEF arrived: {got} bytes");
+        let _ = server.join();
     }
 
     #[test]
