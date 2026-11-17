@@ -1052,11 +1052,24 @@ impl Studio {
     /// In-window menus (Linux, Windows). macOS uses the real menu bar.
     pub fn menu_bar(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        // (Send names the machine the design would go to.)
+        let mut menus = menus();
+        if self.janome_target() {
+            for (_, entries) in &mut menus {
+                for e in entries.iter_mut() {
+                    if let Item(a, label, _) = e
+                        && *a == Action::SendToSkitch
+                    {
+                        *label = "Send to Janome…";
+                    }
+                }
+            }
+        }
         // Plain menu buttons (not a MenuBar, which claims the whole row).
         ui.scope(|ui| {
             ui.visuals_mut().button_frame = false;
             ui.spacing_mut().item_spacing.x = 2.0;
-            for (title, entries) in menus() {
+            for (title, entries) in menus {
                 ui.menu_button(title, |ui| self.menu_entries(ui, &ctx, &entries));
             }
         });

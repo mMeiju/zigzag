@@ -366,8 +366,14 @@ impl Studio {
         }
     }
 
-    /// Open (or close) the Skitch window; opening connects if it isn't.
+    /// Open (or close) the machine window: the Janome one when the
+    /// design's machine is a Janome on Wi-Fi, else the Skitch's (which
+    /// connects as it opens).
     pub fn toggle_machine_window(&mut self) {
+        if self.janome_target() {
+            self.janome.open = !self.janome.open;
+            return;
+        }
         if self.machine.open {
             self.machine.open = false;
             return;

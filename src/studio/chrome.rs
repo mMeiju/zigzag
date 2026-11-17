@@ -136,10 +136,16 @@ impl Studio {
         );
     }
 
-    /// The toolbar's Send: the Skitch window (connecting to the Skitch).
+    /// The toolbar's Send: the machine's window (the Janome one for a
+    /// Janome, else the Skitch's, connecting to the Skitch).
     fn send_button(&mut self, ui: &mut egui::Ui) {
-        if icon_button(ui, Icon::Send, "Send to Skitch", self.machine.open, 28.0)
-            .on_hover_text("Sew it on your Skitch")
+        let (label, hover, open) = if self.janome_target() {
+            ("Send to Janome", "Sew it on your Janome", self.janome.open)
+        } else {
+            ("Send to Skitch", "Sew it on your Skitch", self.machine.open)
+        };
+        if icon_button(ui, Icon::Send, label, open, 28.0)
+            .on_hover_text(hover)
             .clicked()
         {
             self.send_action();

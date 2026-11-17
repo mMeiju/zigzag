@@ -24,6 +24,7 @@ mod file_dialog;
 mod flyout;
 mod gpu;
 mod icons;
+mod janome;
 mod kits;
 mod lasso;
 mod layout;

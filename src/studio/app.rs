@@ -257,6 +257,8 @@ pub struct Studio {
     pub egui_ctx: Option<egui::Context>,
     /// The Skitch: the connection, and what was sent to it.
     pub machine: crate::machine::Machine,
+    /// The Janome window: sending over Wi-Fi.
+    pub janome: crate::janome::JanomePanel,
     /// The stitches as the machine is sewing them, tessellated.
     pub(crate) sew_mesh: std::cell::RefCell<Option<canvas::StitchMesh>>,
     /// Stitches drawn up to a limit (the player, a sew in progress).
@@ -514,6 +516,7 @@ impl Studio {
             ui_scale: Default::default(),
             egui_ctx: None,
             machine: Default::default(),
+            janome: Default::default(),
             sew_mesh: Default::default(),
             limited_mesh: Default::default(),
             preview_sewn_mesh: Default::default(),
@@ -1394,6 +1397,7 @@ impl Studio {
         self.simplify_window(&ctx);
         self.design_window(&ctx);
         self.machine_window(&ctx);
+        self.janome_window(&ctx);
         self.cleanup_window(&ctx);
         self.swatch_window(&ctx);
         self.shape_window(&ctx);

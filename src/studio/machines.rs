@@ -189,7 +189,7 @@ impl Studio {
     /// either, it's offered, as before there were machines to choose. And
     /// always while the machine's window is open or a job is on it.
     pub(crate) fn sends_direct(&self) -> bool {
-        if self.machine.open || self.machine.sent.is_some() {
+        if self.machine.open || self.machine.sent.is_some() || self.janome.open {
             return true;
         }
         match self
@@ -201,6 +201,24 @@ impl Studio {
         {
             None => true,
             Some(id) => self.machines.find(id).is_some_and(|p| p.link.is_some()),
+        }
+    }
+
+    /// Whether the machine a design would be sent to is a Janome on
+    /// Wi-Fi: its Send opens the Janome window, not the Skitch's.
+    pub(crate) fn janome_target(&self) -> bool {
+        match self
+            .doc
+            .settings
+            .machine
+            .as_deref()
+            .or(self.machines.current.as_deref())
+        {
+            Some(id) => self
+                .machines
+                .find(id)
+                .is_some_and(|p| p.link == Some("janome")),
+            None => false,
         }
     }
 
