@@ -47,7 +47,10 @@ pub fn same_hoop(a: (f64, f64), b: (f64, f64)) -> bool {
 /// The ways ZigZag sends a design straight to a machine instead of by a
 /// file: what files and agents call each, and what people do. (A machine
 /// with one is offered Send; one without isn't.)
-pub const LINKS: [(&str, &str); 1] = [("skitch", "Bluetooth (Brother Skitch)")];
+pub const LINKS: [(&str, &str); 2] = [
+    ("skitch", "Bluetooth (Brother Skitch)"),
+    ("janome", "Wi-Fi (Janome dotCustomizer)"),
+];
 
 /// The link named `name` (any case), as [`LINKS`] has it.
 pub fn machine_link(name: &str) -> Option<&'static str> {

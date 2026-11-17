@@ -1,4 +1,5 @@
 pub mod capture;
+pub mod janome;
 pub mod profile;
 pub mod protocol;
 pub mod session;

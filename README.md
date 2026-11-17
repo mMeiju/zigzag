@@ -413,6 +413,25 @@ screen, so two tools are here for working out what else it can do:
 Writing settings stays out of ZigZag until a layout is known and a
 write of the machine's own settings, unchanged, reads back the same.
 
+## Janome over Wi-Fi
+
+Janome machines that work with the dotCustomizer app (the IJ521 and its
+relatives) take designs over Wi-Fi instead of Bluetooth:
+
+```
+zigzag janome discover            # find machines on the local network
+zigzag janome status              # status and needle position
+zigzag janome send design.svg     # converted to JEF (IJ521 setup) and uploaded
+zigzag janome send design.jef     # sent as it is
+```
+
+Everything happens on port 50521: a UDP broadcast finds the machine, a
+UDP query reads its status, and the JEF file goes over TCP — a length
+notice, then the file itself — in plain 20-byte datagram headers. There
+is no pairing and no encryption. The protocol was reverse-engineered
+from dotCustomizer; discovery, status and upload are verified against
+a mock that answers as a machine does, but not yet on a real machine.
+
 ## Ink/Stitch parity
 
 Checked against [Ink/Stitch](https://inkstitch.org/)'s features and tool docs:

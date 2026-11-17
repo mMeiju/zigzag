@@ -72,6 +72,16 @@ enum Cmd {
         #[arg(long, global = true, default_value_t = 10)]
         scan: u64,
     },
+    /// Talk to a Janome machine (IJ521 and other dotCustomizer models)
+    /// over Wi-Fi.
+    Janome {
+        #[command(subcommand)]
+        cmd: JanomeCmd,
+        /// The machine's IP address. Without one, the machine is
+        /// discovered on the local network.
+        #[arg(long, global = true)]
+        host: Option<String>,
+    },
 }
 
 /// Override settings saved in the file.
@@ -185,6 +195,17 @@ enum SkitchCmd {
     },
 }
 
+#[derive(Subcommand)]
+enum JanomeCmd {
+    /// Find Janome machines on the local network.
+    Discover,
+    /// Show the machine's status and needle position.
+    Status,
+    /// Send a design: a .jef file as it is, or an SVG / image converted
+    /// to JEF first, set up for the IJ521 (102 × 102 mm).
+    Send { input: PathBuf },
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
@@ -266,6 +287,7 @@ fn main() -> Result<()> {
             }
         }
         Cmd::Skitch { cmd, name, scan } => skitch(cmd, name, scan)?,
+        Cmd::Janome { cmd, host } => janome(cmd, host)?,
         Cmd::Capture { file, all, raw } => {
             use zigzag::machine::capture;
             let bytes = std::fs::read(&file)?;
@@ -381,6 +403,94 @@ fn summary(d: &Design) {
             n
         );
     }
+}
+
+fn janome(cmd: JanomeCmd, host: Option<String>) -> Result<()> {
+    use std::time::Duration;
+    use zigzag::machine::janome;
+    match cmd {
+        JanomeCmd::Discover => {
+            let machines = janome::discover(Duration::from_secs(2))?;
+            if machines.is_empty() {
+                println!("no Janome machines found on the local network");
+            }
+            for m in &machines {
+                println!("{}\t{}\tmodel {}", m.ip, m.name, m.model);
+            }
+        }
+        JanomeCmd::Status => {
+            let ip = janome_host(host)?;
+            let s = janome::status(&ip, Duration::from_secs(3))?;
+            println!("machine:  {ip}");
+            println!("status:   {} ({})", s.name(), s.code);
+            println!("stitch:   {} of the loaded design", s.stitch_position);
+            println!(
+                "needle:   {:.1} × {:.1} mm",
+                s.x as f64 / 10.0,
+                s.y as f64 / 10.0
+            );
+            println!("design:   CRC {:#06x}", s.design_crc);
+        }
+        JanomeCmd::Send { input } => {
+            // Convert before connecting so design errors show up
+            // immediately.
+            let bytes = janome_jef_bytes(&input)?;
+            let ip = janome_host(host)?;
+            let log = janome::send_jef(&ip, &bytes, Duration::from_secs(15))?;
+            for line in &log {
+                eprintln!("{line}");
+            }
+            eprintln!("sent {} bytes to {ip}", bytes.len());
+        }
+    }
+    Ok(())
+}
+
+/// The machine to talk to: the one named, or the only one discovery
+/// finds.
+fn janome_host(host: Option<String>) -> Result<String> {
+    use zigzag::machine::janome;
+    if let Some(h) = host {
+        return Ok(h);
+    }
+    let machines = janome::discover(std::time::Duration::from_secs(2))?;
+    match machines.len() {
+        0 => bail!(
+            "no Janome machine found on the local network; pass --host <ip> to name one"
+        ),
+        1 => Ok(machines.into_iter().next().unwrap().ip),
+        _ => bail!("several Janome machines found; pass --host <ip> to choose one"),
+    }
+}
+
+/// The JEF bytes to upload: a .jef file as it is, anything else opened
+/// as a design, set up for the IJ521 and written out as JEF.
+fn janome_jef_bytes(input: &Path) -> Result<Vec<u8>> {
+    let ext = input
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if ext == "jef" {
+        return Ok(std::fs::read(input)?);
+    }
+    let mut doc = Document::open(input)?;
+    if let Some(p) = zigzag::machine::profile::builtin_named("janome-ij521") {
+        p.apply(&mut doc.settings, true);
+    }
+    let d = doc.plan();
+    summary(&d);
+    let b = d.bounds();
+    let field = zigzag::machine::janome::IJ521_FIELD_MM * 10.0;
+    if b.width() > field || b.height() > field {
+        bail!(
+            "design is {:.1} × {:.1} mm but the IJ521 sews 102 × 102 mm",
+            b.width() / 10.0,
+            b.height() / 10.0
+        );
+    }
+    zigzag::formats::write_format_with(&d, "jef", &doc.settings.export_options())
+        .map_err(|_| anyhow::anyhow!("could not write the design as JEF"))
 }
 
 #[cfg(not(feature = "ble"))]

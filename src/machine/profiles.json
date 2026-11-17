@@ -48,6 +48,16 @@
       "tested": false
     },
     {
+      "id": "janome-ij521",
+      "name": "Janome IJ521",
+      "hoops": ["102x102"],
+      "default_hoop": "102x102",
+      "format": "jef",
+      "link": "janome",
+      "source": "Janome's IJ521 page: 102 × 102 mm embroidery field, designs arrive over Wi-Fi from the dotCustomizer app. The Wi-Fi link speaks that app's protocol (UDP discovery and status, TCP upload, port 50521), reverse-engineered from the app and verified against a protocol mock; not yet sewn from ZigZag on a real machine.",
+      "tested": false
+    },
+    {
       "id": "viking-jade-35",
       "name": "Husqvarna Viking Designer Jade 35",
       "hoops": ["150x240", "120x120"],
