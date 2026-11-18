@@ -123,6 +123,49 @@ fn system_font() -> Option<(String, Vec<u8>, u32)> {
     None
 }
 
+/// The name the CJK fallback font is registered under.
+const CJK_FALLBACK: &str = "cjk-fallback";
+
+/// A font with CJK glyphs, to sit behind the system font as a fallback:
+/// neither the system fonts above nor egui's own have Japanese glyphs,
+/// so without this, Japanese text (the agent panel's prompts and
+/// replies, say) draws as boxes. Found the way [`system_font`] is:
+/// known files first, then the font database by family name.
+fn cjk_font() -> Option<(String, Vec<u8>, u32)> {
+    for path in [
+        "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+    ] {
+        if let Ok(bytes) = std::fs::read(path) {
+            return Some((CJK_FALLBACK.into(), bytes, 0));
+        }
+    }
+    let db = zigzag::svg::fontdb();
+    for family in [
+        "Hiragino Sans",
+        "Hiragino Kaku Gothic ProN",
+        "Hiragino Kaku Gothic Pro",
+        "Noto Sans CJK JP",
+        "Noto Sans JP",
+        "Noto Sans CJK",
+        "Source Han Sans JP",
+        "Yu Gothic",
+        "YuGothic",
+        "Meiryo",
+    ] {
+        let query = usvg::fontdb::Query {
+            families: &[usvg::fontdb::Family::Name(family)],
+            ..Default::default()
+        };
+        if let Some(id) = db.query(&query)
+            && let Some((bytes, index)) = db.with_face_data(id, |d, i| (d.to_vec(), i))
+        {
+            return Some((CJK_FALLBACK.into(), bytes, index));
+        }
+    }
+    None
+}
+
 fn visuals(p: &Pal) -> Visuals {
     let mut v = if p.dark {
         Visuals::dark()
@@ -248,8 +291,10 @@ pub fn semibold(size: f32) -> FontId {
     }
 }
 
-/// Fonts and both appearances; the system setting picks between them.
-pub fn install(ctx: &egui::Context) {
+/// The fonts the studio runs on: the system font first, a CJK fallback
+/// behind it (the headings family is built from the same list, so it
+/// inherits the fallback), then egui's own.
+fn font_definitions() -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     let mut heavy = false;
     if let Some((name, bytes, index)) = system_font() {
@@ -268,6 +313,14 @@ pub fn install(ctx: &egui::Context) {
             .or_default()
             .insert(0, name);
     }
+    if let Some((name, bytes, index)) = cjk_font() {
+        let mut data = FontData::from_owned(bytes);
+        data.index = index;
+        fonts.font_data.insert(name.clone(), Arc::new(data));
+        for family in [FontFamily::Proportional, FontFamily::Monospace] {
+            fonts.families.entry(family).or_default().push(name.clone());
+        }
+    }
     let mut family = fonts
         .families
         .get(&FontFamily::Proportional)
@@ -279,7 +332,12 @@ pub fn install(ctx: &egui::Context) {
     fonts
         .families
         .insert(FontFamily::Name(SEMIBOLD.into()), family);
-    ctx.set_fonts(fonts);
+    fonts
+}
+
+/// Fonts and both appearances; the system setting picks between them.
+pub fn install(ctx: &egui::Context) {
+    ctx.set_fonts(font_definitions());
     HAS_SEMIBOLD.store(true, std::sync::atomic::Ordering::Relaxed);
     let base = (*ctx.global_style()).clone();
     ctx.set_style_of(Theme::Light, style_for(&LIGHT, &base));
@@ -617,4 +675,39 @@ pub fn callout(ui: &mut egui::Ui, color: Color32, icon: Icon, text: &str) {
                 ui.add(egui::Label::new(egui::RichText::new(text).size(12.0).color(p.text)).wrap());
             });
         });
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The fallback font, when this machine has one, must actually carry
+    /// Japanese glyphs — registering a Latin-only face would leave the
+    /// agent panel's Japanese as boxes, which is the bug this fixes.
+    #[test]
+    fn cjk_fallback_covers_japanese() {
+        let Some((_, bytes, index)) = cjk_font() else {
+            return; // No CJK font on this machine: nothing to check.
+        };
+        let face = ttf_parser::Face::parse(&bytes, index).expect("the CJK font parses");
+        for ch in ['あ', 'ア', '漢', 'ー', '、', '。'] {
+            assert!(face.glyph_index(ch).is_some(), "no glyph for {ch}");
+        }
+    }
+
+    /// The fallback must be registered, and behind the fonts already in
+    /// each family (it is only consulted for glyphs they lack).
+    #[test]
+    fn cjk_fallback_is_registered_as_a_fallback() {
+        if cjk_font().is_none() {
+            return; // No CJK font on this machine: nothing to register.
+        }
+        let fonts = font_definitions();
+        assert!(fonts.font_data.contains_key(CJK_FALLBACK));
+        let prop = &fonts.families[&FontFamily::Proportional];
+        assert_eq!(prop.last().map(String::as_str), Some(CJK_FALLBACK));
+        let mono = &fonts.families[&FontFamily::Monospace];
+        assert_eq!(mono.last().map(String::as_str), Some(CJK_FALLBACK));
+    }
 }
